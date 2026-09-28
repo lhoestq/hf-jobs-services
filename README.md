@@ -7,22 +7,43 @@ group](https://huggingface.co/docs/huggingface_hub/guides/jobs#network-groups), 
 for you: services start, then the Job starts, then the services are canceled.
 
 ```console
-$ hf jobs-services run --with-services "dask(num_workers=4)" my_dask_script.py
-✓ Service dask-scheduler started
-  job: 6a4b0d6b3c1a2b3c4d5e6f70
-  url: https://huggingface.co/jobs/lhoestq/6a4b0d6b3c1a2b3c4d5e6f70
-✓ Service dask-worker-0 started
-  ...
-Waiting for 5 service(s) to be running...
+$ hf jobs-services run use_server.py
+Services loaded from: use_server-services.yml
+✓ Service server started
+  job: 6aba86d76b030d633f69d0ad
+  url: https://huggingface.co/jobs/lhoestq/6aba86d76b030d633f69d0ad
+Waiting for 1 service(s) to be running...
 All services are running.
-Hint: Services group 'services-9f2c7a1b4d83': the Job reaches a service at
+Hint: Services group 'services-47c1b9a1fbc6': the Job reaches a service at
       $HF_NETWORK_GROUP_PREFIX<ALIAS>:<PORT>, e.g. http://$HF_NETWORK_GROUP_PREFIXserver:8000.
 ✓ Job started
-  id: 6a4b0d7e5c1a2b3c4d5e6f88
-  url: https://huggingface.co/jobs/lhoestq/6a4b0d7e5c1a2b3c4d5e6f88
-... the Job logs, streamed until it ends ...
-Cancelled service dask-scheduler (6a4b0d6b3c1a2b3c4d5e6f70)
-Cancelled service dask-worker-0 (6a4b0d6b... )
+  id: 6aba86dd6b030d633f69d0af
+  url: https://huggingface.co/jobs/lhoestq/6aba86dd6b030d633f69d0af
+SMOKE OK http://nwa-6aba86d765d08b3141560010-server:8000/ -> b'<!DOCTYPE HTML>\n<html lang="en">\n<head>\n'
+Cancelled service server (6aba86d76b030d633f69d0ad)
+```
+
+(The script is a plain `urllib` GET against `http://$HF_NETWORK_GROUP_PREFIXserver:8000/`, retried until
+the server answers. The upload progress bars of `hf jobs uv run` are left out.)
+
+Both files are in [`examples/`](examples/) and run as-is: `cd examples && hf jobs-services run
+use_server.py`.
+
+Before spending any compute, `--dry-run` prints the plan without starting anything:
+
+```console
+$ hf jobs-services run --with-services "dask(num_workers=2)" --dry-run my_dask_script.py
+✓ Dry run: nothing started
+  services_file: dask(num_workers=2)
+  services_group: services-8ca62872aa24
+  services: 3
+  script: my_dask_script.py
+  services_timeout: 2h
+ALIAS          IMAGE        FLAVOR
+dask-scheduler python:3.12   cpu-upgrade
+dask-worker-0  python:3.12   cpu-upgrade
+dask-worker-1  python:3.12   cpu-upgrade
+Hint: The Job reaches the services at $HF_NETWORK_GROUP_PREFIX<ALIAS>:<PORT>, e.g. dask-scheduler
 ```
 
 ## Install
@@ -32,7 +53,9 @@ hf extensions install lhoestq/hf-jobs-services
 hf jobs-services --help
 ```
 
-`hf jobs-services ...` then forwards to the extension, like any built-in `hf` command.
+`hf jobs-services ...` then forwards to the extension, like any built-in `hf` command. The installer
+builds an isolated venv with `uv`, so `uv` needs to be on your `PATH`, and re-installing over an existing
+extension takes `hf extensions install --force`.
 
 ## Usage
 
@@ -96,16 +119,21 @@ hf jobs-services run --with-services "dask(num_workers=2)" --flavor cpu-upgrade 
 
 ```bash
 $ hf jobs-services ls
-GROUP                SERVICE         STAGE     ID
-services-9f2c7a...   dask-scheduler  RUNNING   lhoestq/6a4b0d6b3c1a2b3c4d5e6f70
-services-9f2c7a...   dask-worker-0   RUNNING   lhoestq/6a4b0d6b3c1a2b3c4d5e6f71
-services-9f2c7a...   main            RUNNING   lhoestq/6a4b0d7e5c1a2b3c4d5e6f88
-Hint: Stop them with: hf jobs-services stop services-9f2c7a1b4d83
+GROUP                 SERVICE STAGE   ID
+services-594e22f45cd7 server  RUNNING lhoestq/6aba88996b030d633f69d0d9
+Hint: Stop them with: hf jobs-services stop services-594e22f45cd7
 
-$ hf jobs-services stop services-9f2c7a1b4d83
-✓ Job canceled  service=dask-scheduler  job=6a4b0d6b3c1a2b3c4d5e6f70
-...
+$ hf jobs-services stop services-594e22f45cd7
+Cancel 1 Job(s) of services group 'services-594e22f45cd7'? [y/N]: y
+✓ Job canceled
+  service: server
+  job: 6aba88996b030d633f69d0d9
+✓ Services group stopped
+  group: services-594e22f45cd7
+  canceled: 1
 ```
+
+`ls` only shows Jobs still scheduling or running, and `stop` prompts before cancelling (`-y` to skip it).
 
 Every Job started by the extension carries a `services-group` label (and a `service` one), which is how
 `ls` and `stop` find them back - the network group name itself is not queryable through the Jobs API.
@@ -168,7 +196,7 @@ services-file format.
 ```bash
 uv venv && uv pip install -e . pytest ruff ty
 python -m pytest tests                      # 37 tests, no network (the Hub API is faked)
-ruff format src tests && ruff check src tests
+ruff format src tests examples && ruff check src tests examples
 ty check --python .venv src
 ```
 

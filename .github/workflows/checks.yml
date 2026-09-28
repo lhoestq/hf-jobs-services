@@ -14,7 +14,7 @@ jobs:
         with:
           python-version: "3.12"
       - run: uv venv && uv pip install -p .venv/bin/python -e . pytest ruff ty
-      - run: uv run --no-sync ruff format --check src tests
-      - run: uv run --no-sync ruff check src tests
-      - run: uv run --no-sync ty check --python .venv src
-      - run: uv run --no-sync python -m pytest tests -q
+      - run: .venv/bin/ruff format --check src tests examples
+      - run: .venv/bin/ruff check src tests examples
+      - run: .venv/bin/ty check --python .venv src
+      - run: .venv/bin/python -m pytest tests -q
