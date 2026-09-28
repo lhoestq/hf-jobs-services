@@ -55,12 +55,27 @@ RUN_CONTEXT = {"ignore_unknown_options": True}
 class AliasedGroup(click.Group):
     """Accept pipe-separated command names (`@cli.command("ls | list")`), like the built-in `hf` CLI."""
 
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.displays: dict[str, str] = {}
+
     def add_command(self, cmd: click.Command, name: str | None = None) -> None:
         names = [part.strip() for part in (name or cmd.name or "").split("|") if part.strip()]
         cmd.name = names[0]
-        super().add_command(cmd, names[0])
-        for alias in names[1:]:
+        for alias in names:
             self.commands[alias] = cmd
+            self.displays[alias] = " | ".join(names)
+
+    def format_commands(self, ctx: click.Context, formatter: click.HelpFormatter) -> None:
+        """Show an aliased command once (`ls | list`) instead of one line per alias."""
+        rows = []
+        for name in super().list_commands(ctx):
+            display = self.displays.get(name, name)
+            if display not in {row[0] for row in rows}:
+                rows.append((display, self.commands[name].get_short_help_str()))
+        if rows:
+            with formatter.section("Commands"):
+                formatter.write_dl(rows)
 
 
 def handle_errors(func: Callable[..., None]) -> Callable[..., None]:
