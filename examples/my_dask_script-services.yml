@@ -1,0 +1,18 @@
+# Services file of `my_dask_script.py`: `hf jobs-services run my_dask_script.py` finds it by name.
+# Written by hand: equivalent to `hf jobs-services run --with-services "dask(num_workers=4)" my_dask_script.py`
+services:
+  dask-scheduler:
+    image: python:3.12
+    command: ["sh", "-c", "pip install -q dask distributed pandas pyarrow && sleep 3 && dask scheduler --host 0.0.0.0"]
+    flavor: cpu-upgrade
+
+  dask-worker:
+    image: python:3.12
+    command:
+      [
+        "sh",
+        "-c",
+        "pip install -q dask distributed pandas pyarrow && sleep 5 && dask worker tcp://${HF_NETWORK_GROUP_PREFIX}dask-scheduler:8786",
+      ]
+    replicas: 4 # expands to 4 Jobs: dask-worker-0 ... dask-worker-3
+    flavor: cpu-upgrade

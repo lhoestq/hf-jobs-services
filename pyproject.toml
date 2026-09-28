@@ -1,0 +1,52 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hf-jobs-services"
+version = "0.1.0"
+description = "Run an HF Job alongside long-running services (Ray, Dask, Spark, custom) in one network group"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+authors = [{ name = "Hugging Face" }]
+keywords = ["huggingface", "hf", "jobs", "services", "ray", "dask", "spark", "hf-extension"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+dependencies = [
+    "click>=8.1",
+    "huggingface_hub>=2.0.0",
+    "PyYAML>=6.0",
+]
+
+[project.scripts]
+hf-jobs-services = "hf_jobs_services.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/lhoestq/hf-jobs-services"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 119
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["B", "C4", "E", "F", "I", "ISC", "PIE", "PL", "PT", "RET", "RUF", "SIM", "UP", "W"]
+ignore = [
+    "PLR0913",  # the `run` command is a flat list of CLI options on purpose
+    "PLR0917",  # same, for the positional arguments click passes around
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = [
+    "PLR2004",  # asserting on literal exit codes and messages is the point of the test
+    "PT018",    # `assert "a" in out and "b" in out` keeps CLI assertions readable
+    "RUF012",   # the fake API keeps a class-level list of instances
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
