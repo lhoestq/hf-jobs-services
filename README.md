@@ -7,7 +7,7 @@ group](https://huggingface.co/docs/huggingface_hub/guides/jobs#network-groups), 
 for you: services start, then the Job starts, then the services are canceled.
 
 ```console
-$ hf jobs-services run use_server.py
+$ hf jobs-services uv run use_server.py
 Services loaded from: use_server-services.yml
 ✓ Service server started
   job: 6aba86d76b030d633f69d0ad
@@ -26,13 +26,13 @@ Cancelled service server (6aba86d76b030d633f69d0ad)
 (The script is a plain `urllib` GET against `http://$HF_NETWORK_GROUP_PREFIXserver:8000/`, retried until
 the server answers. The upload progress bars of `hf jobs uv run` are left out.)
 
-Both files are in [`examples/`](examples/) and run as-is: `cd examples && hf jobs-services run
+Both files are in [`examples/`](examples/) and run as-is: `cd examples && hf jobs-services uv run
 use_server.py`.
 
 Before spending any compute, `--dry-run` prints the plan without starting anything:
 
 ```console
-$ hf jobs-services run --with-services "dask(num_workers=2)" --dry-run my_dask_script.py
+$ hf jobs-services uv run --with-services "dask(num_workers=2)" --dry-run my_dask_script.py
 ✓ Dry run: nothing started
   services_file: dask(num_workers=2)
   services_group: services-8ca62872aa24
@@ -59,13 +59,35 @@ extension takes `hf extensions install --force`.
 
 ## Usage
 
+```console
+$ hf jobs-services --help
+Usage: hf jobs-services [OPTIONS] COMMAND [ARGS]...
+
+  Run Jobs alongside background services (Ray, Dask, Spark, custom).
+
+Options:
+  --help  Show this message and exit.
+
+Commands:
+  ls | list  List the running Jobs started by hf jobs-services.
+  stop       Cancel every running Job of a services group.
+  templates  List the available services templates.
+  uv         Run UV scripts as Jobs, alongside services.
+```
+
+`hf jobs-services uv run` mirrors `hf jobs uv run` option for option (`--with`, `-p/--python`, `--image`,
+`--flavor`, `--timeout`, `-e/--env`, `-s/--secrets`, `--env-file` / `--secrets-file` with `-` for stdin,
+`-v/--volume`, `--expose`, `--ssh`, `-d/--detach`, `--dry-run`, ...) and adds `--with-services` and
+`--services-timeout`. The old `hf jobs-services run` still works, but prints a pointer to
+`hf jobs-services uv run`.
+
 ### One template, one script
 
 ```bash
-hf jobs-services run --with-services "ray(num_workers=4)" my_ray_script.py
-hf jobs-services run --with-services "dask(num_workers=4)" my_dask_script.py -- --num-rows 1000
-hf jobs-services run --with-services "spark(num_workers=2)" my_spark_script.py
-hf jobs-services run --with-services "spark_connect(num_workers=2)" my_connect_script.py
+hf jobs-services uv run --with-services "ray(num_workers=4)" my_ray_script.py
+hf jobs-services uv run --with-services "dask(num_workers=4)" my_dask_script.py -- --num-rows 1000
+hf jobs-services uv run --with-services "spark(num_workers=2)" my_spark_script.py
+hf jobs-services uv run --with-services "spark_connect(num_workers=2)" my_connect_script.py
 ```
 
 `hf jobs-services templates` lists the templates and their parameters. Arguments are typed
@@ -98,7 +120,7 @@ services:
 ```
 
 ```bash
-hf jobs-services run my_train_script.py
+hf jobs-services uv run my_train_script.py
 ```
 
 Supported keys per service: `image`, `command`, `env`, `secrets`, `flavor`, `replicas`, `expose`,
@@ -110,7 +132,7 @@ an explanation instead of being silently ignored.
 ### From the shell, without a file
 
 ```bash
-hf jobs-services run --with-services "dask(num_workers=2)" --flavor cpu-upgrade --timeout 30m \
+hf jobs-services uv run --with-services "dask(num_workers=2)" --flavor cpu-upgrade --timeout 30m \
   -e HF_TOKEN -s MY_SECRET=abc -v hf://datasets/trl-lib/Capybara:/data \
   my_dask_script.py --num-rows 1000
 ```
@@ -178,7 +200,7 @@ cut a few seconds off the startup, and `ray_version=` / `dask_version=` to pin a
 
 ## Limits of this approach
 
-The orchestration is client-side: one `hf jobs-services run` process starts the services, waits for them,
+The orchestration is client-side: one `hf jobs-services uv run` process starts the services, waits for them,
 starts the Job, streams its logs and cancels the services at the end. Concretely:
 
 - the terminal has to stay alive (or use `--detach`, and stop the services yourself afterwards);

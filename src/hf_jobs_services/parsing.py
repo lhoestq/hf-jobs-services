@@ -2,6 +2,7 @@
 
 import os
 import re
+import sys
 
 from huggingface_hub import Volume
 from huggingface_hub.utils import parse_hf_mount
@@ -84,6 +85,9 @@ def parse_volumes(specs: list[str]) -> list[Volume]:
 
 
 def read_text(path: str) -> str:
+    """Read a file, or standard input when the path is `-` (as in `hf jobs uv run --env-file -`)."""
+    if path == "-":
+        return sys.stdin.read()
     try:
         with open(path) as f:
             return f.read()

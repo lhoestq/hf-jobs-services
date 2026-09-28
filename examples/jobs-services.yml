@@ -1,4 +1,4 @@
-# Default services file: `hf jobs-services run my_script.py` picks it up from the current folder.
+# Default services file: `hf jobs-services uv run my_script.py` picks it up from the current folder.
 # The server is reachable from the Job at http://$HF_NETWORK_GROUP_PREFIXserver:8000
 services:
   server:

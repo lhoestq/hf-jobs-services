@@ -47,8 +47,8 @@ from .templates import SERVICES_TEMPLATES
 # forever if the terminal running `hf jobs-services` dies (a Ctrl+C'd laptop, a dropped SSH session...).
 DEFAULT_SERVICES_TIMEOUT = "2h"
 
-# Trailing arguments belong to the script: `hf jobs-services run -v ... s.py --epochs 3`. Known options are still
-# parsed anywhere (same as `hf jobs uv run`), so pass script flags after a `--` separator to be safe.
+# Trailing arguments belong to the script: `hf jobs-services uv run -v ... s.py --epochs 3`. Known options are
+# still parsed anywhere (same as `hf jobs uv run`), so pass script flags after a `--` separator to be safe.
 RUN_CONTEXT = {"ignore_unknown_options": True}
 
 
@@ -72,10 +72,27 @@ class AliasedGroup(click.Group):
         for name in super().list_commands(ctx):
             display = self.displays.get(name, name)
             if display not in {row[0] for row in rows}:
-                rows.append((display, self.commands[name].get_short_help_str()))
+                rows.append((display, self.commands[name].get_short_help_str(limit=70)))
         if rows:
             with formatter.section("Commands"):
                 formatter.write_dl(rows)
+
+
+# `hf jobs-services run` predates the `uv` subgroup: keep answering, but tell the user where it went.
+MOVED_COMMANDS = {"run": ("uv", "run")}
+
+
+class RootGroup(AliasedGroup):
+    """Answer commands that moved into a subgroup, with a pointer to their new name."""
+
+    def get_command(self, ctx: click.Context, cmd_name: str) -> click.Command | None:
+        command = super().get_command(ctx, cmd_name)
+        if command is not None or cmd_name not in MOVED_COMMANDS:
+            return command
+        group_name, target = MOVED_COMMANDS[cmd_name]
+        warn(f"'hf jobs-services {cmd_name}' is now 'hf jobs-services {group_name} {target}'.")
+        group = self.commands.get(group_name)
+        return group.get_command(ctx, target) if isinstance(group, click.Group) else None
 
 
 def handle_errors(func: Callable[..., None]) -> Callable[..., None]:
@@ -94,13 +111,21 @@ def handle_errors(func: Callable[..., None]) -> Callable[..., None]:
 
 
 @click.group(
-    cls=AliasedGroup, name="jobs-services", help="Run Jobs alongside background services (Ray, Dask, Spark, custom)."
+    cls=RootGroup, name="jobs-services", help="Run Jobs alongside background services (Ray, Dask, Spark, custom)."
 )
 def cli() -> None:
     pass
 
 
-@cli.command(context_settings=RUN_CONTEXT)
+@click.group(cls=AliasedGroup, name="uv", help="Run UV scripts as Jobs, alongside services.")
+def uv() -> None:
+    pass
+
+
+cli.add_command(uv)
+
+
+@uv.command("run", context_settings=RUN_CONTEXT)
 @click.option(
     "--with-services",
     default=None,
@@ -112,7 +137,7 @@ def cli() -> None:
 @click.argument("script", metavar="SCRIPT")
 @click.argument("script_args", nargs=-1, type=click.UNPROCESSED, metavar="[ARGS]...")
 @click.option("--with", "dependencies", multiple=True, help="Python dependency for the script (repeatable).")
-@click.option("--python", "python_version", default=None, help="Python version for the script, e.g. '3.11'.")
+@click.option("-p", "--python", "python_version", default=None, help="Python version for the script, e.g. '3.11'.")
 @click.option("--image", default=None, help="Base image of the Job. Defaults to the default UV image.")
 @click.option("--flavor", default=None, help="Hardware flavor of the Job, e.g. 'cpu-upgrade' or 'a10g-small'.")
 @click.option("--timeout", default=None, help="Max duration of the Job, e.g. 300, '30m', '2h', '1d'.")
@@ -122,11 +147,13 @@ def cli() -> None:
     help=f"Max duration of each service Job. Defaults to --timeout, or to {DEFAULT_SERVICES_TIMEOUT}.",
 )
 @click.option("--name", default=None, help="Name of the main Job.")
-@click.option("--label", "labels", multiple=True, help="Label of the main Job as key=value (repeatable).")
+@click.option("-l", "--label", "labels", multiple=True, help="Label of the main Job as key=value (repeatable).")
 @click.option("-e", "--env", multiple=True, help="Environment variable as KEY=VALUE, or KEY to forward the local one.")
-@click.option("--env-file", default=None, help="Path to a dotenv file with the environment variables.")
+@click.option(
+    "--env-file", default=None, help="Path to a dotenv file with the environment variables, or '-' for stdin."
+)
 @click.option("-s", "--secrets", multiple=True, help="Secret as KEY=VALUE, or KEY to forward the local one.")
-@click.option("--secrets-file", default=None, help="Path to a dotenv file with the secrets.")
+@click.option("--secrets-file", default=None, help="Path to a dotenv file with the secrets, or '-' for stdin.")
 @click.option("-v", "--volume", "volumes", multiple=True, help="Volume to mount: hf://[TYPE/]SOURCE:/MOUNT_PATH[:ro].")
 @click.option("--expose", multiple=True, type=int, help="Port of the Job to expose through the Jobs proxy.")
 @click.option("--ssh", is_flag=True, default=False, help="Enable SSH access to the Job.")
@@ -168,8 +195,8 @@ def run(
 
     \b
     Examples:
-      hf jobs-services run --with-services "dask(num_workers=4)" my_dask_script.py
-      hf jobs-services run my_script.py --epochs 3     # reads my_script-services.yml or jobs-services.yml
+      hf jobs-services uv run --with-services "dask(num_workers=4)" my_dask_script.py
+      hf jobs-services uv run my_script.py --epochs 3    # reads my_script-services.yml or jobs-services.yml
     """
     source = with_services or discover_services_file(script)
     if source is None:
@@ -266,7 +293,7 @@ def ls(group: str | None, namespace: str | None, token: str | None) -> None:
     jobs = list_group_jobs(api, namespace=namespace, token=token, group=group)
     if not jobs:
         warn("No services Job is running.")
-        hint('Start one with: hf jobs-services run --with-services "dask(num_workers=4)" my_script.py')
+        hint('Start one with: hf jobs-services uv run --with-services "dask(num_workers=4)" my_script.py')
         return
     groups = {(job.labels or {})[GROUP_LABEL] for job in jobs}
     table(
@@ -311,7 +338,7 @@ def templates() -> None:
         summary = (template.__doc__ or "").strip().splitlines()[0]
         click.echo(f"{name}({template_params(name)})")
         click.echo(f"    {summary}")
-    hint('Use one with: hf jobs-services run --with-services "ray(num_workers=4)" my_ray_script.py')
+    hint('Use one with: hf jobs-services uv run --with-services "ray(num_workers=4)" my_ray_script.py')
 
 
 def _print_plan(

@@ -1,4 +1,4 @@
-# Services file of use_server.py: `hf jobs-services run use_server.py` finds it by name.
+# Services file of use_server.py: `hf jobs-services uv run use_server.py` finds it by name.
 services:
   # reachable from the Job at http://$HF_NETWORK_GROUP_PREFIXserver:8000
   server:

@@ -1,4 +1,4 @@
-# Paired with use_server-services.yml: `hf jobs-services run use_server.py`
+# Paired with use_server-services.yml: `hf jobs-services uv run use_server.py`
 #
 # Members of a services group are resolvable before they are ready, so the client retries instead of
 # assuming the server is up when the Job starts.

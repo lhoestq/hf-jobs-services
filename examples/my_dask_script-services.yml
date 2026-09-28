@@ -1,5 +1,5 @@
-# Services file of `my_dask_script.py`: `hf jobs-services run my_dask_script.py` finds it by name.
-# Written by hand: equivalent to `hf jobs-services run --with-services "dask(num_workers=4)" my_dask_script.py`
+# Services file of `my_dask_script.py`: `hf jobs-services uv run my_dask_script.py` finds it by name.
+# Written by hand: equivalent to `hf jobs-services uv run --with-services "dask(num_workers=4)" my_dask_script.py`
 services:
   dask-scheduler:
     image: python:3.12

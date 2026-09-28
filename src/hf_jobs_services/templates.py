@@ -148,7 +148,7 @@ def spark(
     Reach the master from the main job with
     `spark://${HF_NETWORK_GROUP_PREFIX}spark-master:7077` (thrift server on 9083).
 
-    Note: the main job needs a JVM image to talk to this cluster, so `hf jobs-services run` with a plain UV
+    Note: the main job needs a JVM image to talk to this cluster, so `hf jobs-services uv run` with a plain UV
     script works better with [`spark_connect`] than with [`spark`].
 
     Args:
@@ -249,7 +249,7 @@ def spark_connect(
     }
 
 
-# CLI lookup: `hf jobs-services run "dask(num_workers=4)" ...` calls `SERVICES_TEMPLATES["dask"](num_workers=4)`.
+# CLI lookup: `hf jobs-services uv run "dask(num_workers=4)" ...` calls `SERVICES_TEMPLATES["dask"](num_workers=4)`.
 SERVICES_TEMPLATES: dict[str, Any] = {
     "ray": ray,
     "dask": dask,
