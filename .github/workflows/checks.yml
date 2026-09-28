@@ -13,7 +13,7 @@ jobs:
       - uses: astral-sh/setup-uv@v5
         with:
           python-version: "3.12"
-      - run: uv venv && uv pip install -p .venv/bin/python -e . pytest ruff ty
+      - run: uv pip install -e . pytest ruff ty
       - run: .venv/bin/ruff format --check src tests examples
       - run: .venv/bin/ruff check src tests examples
       - run: .venv/bin/ty check --python .venv src
