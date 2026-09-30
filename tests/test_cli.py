@@ -288,10 +288,10 @@ def test_uv_group_lists_run(workdir):
     assert "run" in result.output
 
 
-def test_bare_run_still_works_and_points_to_uv_run(patch_api, workdir):
+def test_bare_run_is_a_silent_alias_of_uv_run(patch_api, workdir):
     result = workdir.invoke(cli, ["run", "--with-services", "dask(num_workers=1)", "my_script.py"])
     assert result.exit_code == 0, result.output
-    assert "'hf jobs-services run' is now 'hf jobs-services uv run'" in result.output
+    assert "Warning" not in result.output
     assert last().services == ["dask-scheduler", "dask-worker", "main"]
 
 

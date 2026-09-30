@@ -78,8 +78,8 @@ Commands:
 `hf jobs-services uv run` mirrors `hf jobs uv run` option for option (`--with`, `-p/--python`, `--image`,
 `--flavor`, `--timeout`, `-e/--env`, `-s/--secrets`, `--env-file` / `--secrets-file` with `-` for stdin,
 `-v/--volume`, `--expose`, `--ssh`, `-d/--detach`, `--dry-run`, ...) and adds `--with-services` and
-`--services-timeout`. The old `hf jobs-services run` still works, but prints a pointer to
-`hf jobs-services uv run`.
+`--services-timeout`. `hf jobs-services run` is kept as a shorter alias of `hf jobs-services uv run`, hidden
+from `--help`.
 
 ### One template, one script
 

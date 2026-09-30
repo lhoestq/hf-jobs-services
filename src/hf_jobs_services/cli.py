@@ -78,19 +78,18 @@ class AliasedGroup(click.Group):
                 formatter.write_dl(rows)
 
 
-# `hf jobs-services run` predates the `uv` subgroup: keep answering, but tell the user where it went.
-MOVED_COMMANDS = {"run": ("uv", "run")}
+# Commands reachable from the root as well as from their subgroup, without a line of their own in `--help`.
+HIDDEN_ALIASES = {"run": ("uv", "run")}
 
 
 class RootGroup(AliasedGroup):
-    """Answer commands that moved into a subgroup, with a pointer to their new name."""
+    """Resolve a hidden alias to the command of its subgroup (`run` -> `uv run`)."""
 
     def get_command(self, ctx: click.Context, cmd_name: str) -> click.Command | None:
         command = super().get_command(ctx, cmd_name)
-        if command is not None or cmd_name not in MOVED_COMMANDS:
+        if command is not None or cmd_name not in HIDDEN_ALIASES:
             return command
-        group_name, target = MOVED_COMMANDS[cmd_name]
-        warn(f"'hf jobs-services {cmd_name}' is now 'hf jobs-services {group_name} {target}'.")
+        group_name, target = HIDDEN_ALIASES[cmd_name]
         group = self.commands.get(group_name)
         return group.get_command(ctx, target) if isinstance(group, click.Group) else None
 
