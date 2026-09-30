@@ -169,7 +169,7 @@ def list_group_jobs(api: HfApi, *, namespace: str, token: str | None, group: str
 def hint_connect(group: str) -> None:
     """How the main Job reaches the services."""
     hint(
-        f"Services group '{group}': the Job reaches a service at $HF_NETWORK_GROUP_PREFIX<ALIAS>:<PORT>, "
-        "e.g. http://$HF_NETWORK_GROUP_PREFIXserver:8000. Members are resolvable before they are ready: "
+        f"Services group '{group}': the Job reaches a service at ${{HF_NETWORK_GROUP_PREFIX}}<ALIAS>:<PORT>, "
+        "e.g. http://${HF_NETWORK_GROUP_PREFIX}server:8000. Members are resolvable before they are ready: "
         "connect with retries."
     )

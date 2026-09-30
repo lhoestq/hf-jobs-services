@@ -15,7 +15,7 @@ Services loaded from: use_server-services.yml
 Waiting for 1 service(s) to be running...
 All services are running.
 Hint: Services group 'services-47c1b9a1fbc6': the Job reaches a service at
-      $HF_NETWORK_GROUP_PREFIX<ALIAS>:<PORT>, e.g. http://$HF_NETWORK_GROUP_PREFIXserver:8000.
+      ${HF_NETWORK_GROUP_PREFIX}<ALIAS>:<PORT>, e.g. http://${HF_NETWORK_GROUP_PREFIX}server:8000.
 ✓ Job started
   id: 6aba86dd6b030d633f69d0af
   url: https://huggingface.co/jobs/lhoestq/6aba86dd6b030d633f69d0af
@@ -23,7 +23,7 @@ SMOKE OK http://nwa-6aba86d765d08b3141560010-server:8000/ -> b'<!DOCTYPE HTML>\n
 Cancelled service server (6aba86d76b030d633f69d0ad)
 ```
 
-(The script is a plain `urllib` GET against `http://$HF_NETWORK_GROUP_PREFIXserver:8000/`, retried until
+(The script is a plain `urllib` GET against `http://${HF_NETWORK_GROUP_PREFIX}server:8000/`, retried until
 the server answers. The upload progress bars of `hf jobs uv run` are left out.)
 
 Both files are in [`examples/`](examples/) and run as-is: `cd examples && hf jobs-services uv run
@@ -43,7 +43,7 @@ ALIAS          IMAGE        FLAVOR
 dask-scheduler python:3.12   cpu-upgrade
 dask-worker-0  python:3.12   cpu-upgrade
 dask-worker-1  python:3.12   cpu-upgrade
-Hint: The Job reaches the services at $HF_NETWORK_GROUP_PREFIX<ALIAS>:<PORT>, e.g. dask-scheduler
+Hint: The Job reaches the services at ${HF_NETWORK_GROUP_PREFIX}<ALIAS>:<PORT>, e.g. dask-scheduler
 ```
 
 ## Install
@@ -70,16 +70,23 @@ Options:
 
 Commands:
   ls | list  List the running Jobs started by hf jobs-services.
+  run        Run a container Job, alongside services in a shared network group.
   stop       Cancel every running Job of a services group.
   templates  List the available services templates.
   uv         Run UV scripts as Jobs, alongside services.
 ```
 
-`hf jobs-services uv run` mirrors `hf jobs uv run` option for option (`--with`, `-p/--python`, `--image`,
-`--flavor`, `--timeout`, `-e/--env`, `-s/--secrets`, `--env-file` / `--secrets-file` with `-` for stdin,
-`-v/--volume`, `--expose`, `--ssh`, `-d/--detach`, `--dry-run`, ...) and adds `--with-services` and
-`--services-timeout`. `hf jobs-services run` is kept as a shorter alias of `hf jobs-services uv run`, hidden
-from `--help`.
+Two runners, mirroring the two runners of `hf jobs`:
+
+| | Job | services file looked up by default |
+| --- | --- | --- |
+| `hf jobs-services run IMAGE COMMAND...` | a container, like `docker run` (`hf jobs run`) | `jobs-services.yml` in the current folder |
+| `hf jobs-services uv run SCRIPT [ARGS]...` | a UV script (`hf jobs uv run`) | `<script-name>-services.yml`, then `jobs-services.yml` |
+
+Both take the options of their `hf jobs` counterpart (`--flavor`, `--timeout`, `-e/--env`, `-s/--secrets`,
+`--env-file` / `--secrets-file` with `-` for stdin, `-v/--volume`, `--expose`, `--ssh`, `-d/--detach`,
+`--dry-run`, ...; plus `--with`, `-p/--python` and `--image` for the UV runner) and add `--with-services`
+and `--services-timeout`.
 
 ### One template, one script
 
@@ -96,15 +103,26 @@ hf jobs-services uv run --with-services "spark_connect(num_workers=2)" my_connec
 Anything after the script name goes to the script. Pass a `--` separator to make sure a flag of yours is
 not read as an option of `hf jobs-services`.
 
+### One template, one container
+
+Without a script to run, give the image and its command, like `docker run`:
+
+```bash
+hf jobs-services run --with-services "ray(num_workers=4)" python:3.12 python my_script.py --epochs 3
+hf jobs-services run --with-services "dask(num_workers=2)" python:3.12 sh -c 'python train.py'
+hf jobs-services run curlimages/curl curl -sf http://${HF_NETWORK_GROUP_PREFIX}server:8000/   # jobs-services.yml
+```
+
 ### A services file
 
 Without `--with-services`, the services file is looked up by name: first `<script-name>-services.yml`
-next to the script, then `jobs-services.yml` in the current folder.
+next to the script, then `jobs-services.yml` in the current folder. `hf jobs-services run` has no script to
+derive a name from, so it only looks for `jobs-services.yml`.
 
 ```yaml
 # my_train_script-services.yml
 services:
-  # reachable from the Job at http://$HF_NETWORK_GROUP_PREFIXserver:8000
+  # reachable from the Job at http://${HF_NETWORK_GROUP_PREFIX}server:8000
   server:
     image: python:3.12
     command: ["python", "-m", "http.server", "8000"]
@@ -181,6 +199,10 @@ variables set inside each Job:
 - `${HF_NETWORK_GROUP_PREFIX}<alias>` - the hosts claiming that alias (`server`, `dask-scheduler`, ...)
 - `$HF_NETWORK_GROUP_HOSTNAME` - every member of the group
 
+In a shell, always brace the prefix: `${HF_NETWORK_GROUP_PREFIX}server:8000`. Written
+`$HF_NETWORK_GROUP_PREFIXserver`, the shell reads one variable called `HF_NETWORK_GROUP_PREFIXserver`
+and expands it to nothing. (Python and `os.environ` concatenation are of course immune.)
+
 Members are resolvable **before** they are ready: connect with retries
 (`curl --retry 10 --retry-connrefused`, `ray.init(..., retries=...)`) rather than expecting a startup
 order. The main Job claims the `main` alias unless a service already took it.
@@ -189,10 +211,10 @@ order. The main Job claims the `main` alias unless a service already took it.
 
 | Template                                | Services                                    | From the Job, connect with                                  |
 | --------------------------------------- | ------------------------------------------- | ----------------------------------------------------------- |
-| `ray(num_workers=2, ...)`               | `ray-head` + `ray-worker-N`                 | `JobSubmissionClient("http://$HF_NETWORK_GROUP_PREFIXray-head:8265")` |
-| `dask(num_workers=2, ...)`              | `dask-scheduler` + `dask-worker-N`          | `Client("http://$HF_NETWORK_GROUP_PREFIXdask-scheduler:8786")` |
-| `spark(num_workers=2, ...)`             | `spark-master` + `spark-worker-N`           | `spark://$HF_NETWORK_GROUP_PREFIXspark-master:7077` (thrift on 9083) |
-| `spark_connect(num_workers=2, ...)`     | `spark-master`, `spark-connect` + workers   | `SparkSession.builder.remote("sc://$HF_NETWORK_GROUP_PREFIXspark-connect:15002")` |
+| `ray(num_workers=2, ...)`               | `ray-head` + `ray-worker-N`                 | `JobSubmissionClient("http://${HF_NETWORK_GROUP_PREFIX}ray-head:8265")` |
+| `dask(num_workers=2, ...)`              | `dask-scheduler` + `dask-worker-N`          | `Client("http://${HF_NETWORK_GROUP_PREFIX}dask-scheduler:8786")` |
+| `spark(num_workers=2, ...)`             | `spark-master` + `spark-worker-N`           | `spark://${HF_NETWORK_GROUP_PREFIX}spark-master:7077` (thrift on 9083) |
+| `spark_connect(num_workers=2, ...)`     | `spark-master`, `spark-connect` + workers   | `SparkSession.builder.remote("sc://${HF_NETWORK_GROUP_PREFIX}spark-connect:15002")` |
 
 Run `hf jobs-services templates` for the full parameter list of each one. The Ray and Dask templates
 install their Python package inside the service Jobs: pass `image=` (with the package pre-installed) to

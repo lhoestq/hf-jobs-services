@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 import click
-from huggingface_hub import HfApi, JobStage, get_token
+from huggingface_hub import HfApi, JobInfo, JobStage, get_token
 from huggingface_hub.errors import HfHubHTTPError
 
 from .errors import ServicesError
@@ -34,9 +34,11 @@ from .runner import (
     wait_for_services,
 )
 from .services import (
+    DEFAULT_SERVICES_FILENAMES,
     ServiceSpec,
     build_service_specs,
     discover_services_file,
+    find_default_services_file,
     resolve_services,
     services_candidates,
     template_params,
@@ -78,22 +80,6 @@ class AliasedGroup(click.Group):
                 formatter.write_dl(rows)
 
 
-# Commands reachable from the root as well as from their subgroup, without a line of their own in `--help`.
-HIDDEN_ALIASES = {"run": ("uv", "run")}
-
-
-class RootGroup(AliasedGroup):
-    """Resolve a hidden alias to the command of its subgroup (`run` -> `uv run`)."""
-
-    def get_command(self, ctx: click.Context, cmd_name: str) -> click.Command | None:
-        command = super().get_command(ctx, cmd_name)
-        if command is not None or cmd_name not in HIDDEN_ALIASES:
-            return command
-        group_name, target = HIDDEN_ALIASES[cmd_name]
-        group = self.commands.get(group_name)
-        return group.get_command(ctx, target) if isinstance(group, click.Group) else None
-
-
 def handle_errors(func: Callable[..., None]) -> Callable[..., None]:
     """Render API and file failures as a one-line error instead of a traceback."""
 
@@ -110,7 +96,7 @@ def handle_errors(func: Callable[..., None]) -> Callable[..., None]:
 
 
 @click.group(
-    cls=RootGroup, name="jobs-services", help="Run Jobs alongside background services (Ray, Dask, Spark, custom)."
+    cls=AliasedGroup, name="jobs-services", help="Run Jobs alongside background services (Ray, Dask, Spark, custom)."
 )
 def cli() -> None:
     pass
@@ -123,46 +109,231 @@ def uv() -> None:
 
 cli.add_command(uv)
 
+# The options of `hf jobs run`, shared verbatim by `hf jobs-services run` and `hf jobs-services uv run`.
+COMMON_OPTIONS: list[Callable[..., Any]] = [
+    click.option("--flavor", default=None, help="Hardware flavor of the Job, e.g. 'cpu-upgrade' or 'a10g-small'."),
+    click.option("--timeout", default=None, help="Max duration of the Job, e.g. 300, '30m', '2h', '1d'."),
+    click.option(
+        "--services-timeout",
+        default=None,
+        help=f"Max duration of each service Job. Defaults to --timeout, or to {DEFAULT_SERVICES_TIMEOUT}.",
+    ),
+    click.option("--name", default=None, help="Name of the main Job."),
+    click.option("-l", "--label", "labels", multiple=True, help="Label of the main Job as key=value (repeatable)."),
+    click.option(
+        "-e", "--env", multiple=True, help="Environment variable as KEY=VALUE, or KEY to forward the local one."
+    ),
+    click.option(
+        "--env-file", default=None, help="Path to a dotenv file with the environment variables, or '-' for stdin."
+    ),
+    click.option("-s", "--secrets", multiple=True, help="Secret as KEY=VALUE, or KEY to forward the local one."),
+    click.option("--secrets-file", default=None, help="Path to a dotenv file with the secrets, or '-' for stdin."),
+    click.option(
+        "-v", "--volume", "volumes", multiple=True, help="Volume to mount: hf://[TYPE/]SOURCE:/MOUNT_PATH[:ro]."
+    ),
+    click.option("--expose", multiple=True, type=int, help="Port of the Job to expose through the Jobs proxy."),
+    click.option("--ssh", is_flag=True, default=False, help="Enable SSH access to the Job."),
+    click.option("--resource-group-id", default=None, help="Resource group shared by the Job and its services."),
+    click.option(
+        "--namespace", default=None, help="Namespace of the Job and its services. Defaults to the current user."
+    ),
+    click.option("--token", default=None, help="User access token. Defaults to the locally saved token."),
+    click.option("-d", "--detach", is_flag=True, default=False, help="Return as soon as the Job is started."),
+    click.option("--dry-run", is_flag=True, default=False, help="Show what would run, without starting anything."),
+]
 
-@uv.command("run", context_settings=RUN_CONTEXT)
-@click.option(
+
+def common_options(func: Callable[..., Any]) -> Callable[..., Any]:
+    """Add the shared run options to a command (decorators apply bottom-up, so iterate in reverse)."""
+    for option in reversed(COMMON_OPTIONS):
+        func = option(func)
+    return func
+
+
+SERVICES_OPTION = click.option(
     "--with-services",
     default=None,
     metavar="SPEC",
     help="Services to run alongside the Job: a template call (e.g. 'dask(num_workers=4)', see "
-    "`hf jobs-services templates`) or the path of a services file. Defaults to '<script>-services.yml' "
-    "next to the script, then to 'jobs-services.yml' in the current folder.",
+    "`hf jobs-services templates`) or the path of a services file.",
 )
+
+
+def launch(
+    api: HfApi,
+    namespace: str,
+    *,
+    token: str | None,
+    specs: list[ServiceSpec],
+    source: str,
+    group: str,
+    services_timeout: str,
+    resource_group_id: str | None,
+    detach: bool,
+    start_main_job: Callable[[], JobInfo],
+) -> None:
+    """Start the services, wait for them to run, start the main Job, and leave nothing behind."""
+    log(f"Services loaded from: {source}")
+    started: list[ServiceJob] = []
+    main_job: JobInfo | None = None
+    try:
+        started = start_services(
+            api,
+            specs,
+            group=group,
+            namespace=namespace,
+            token=token,
+            timeout=services_timeout,
+            resource_group_id=resource_group_id,
+        )
+        wait_for_services(api, started, namespace=namespace, token=token, timeout=_seconds(services_timeout))
+        hint_connect(group)
+        main_job = start_main_job()
+        result("Job started", id=main_job.id, url=main_job.url)
+
+        if detach:
+            hint(f"Use `hf jobs logs -f {namespace}/{main_job.id}` to stream the logs.")
+            hint(f"Services stay up: stop them with `hf jobs-services stop {group}`, or let their timeout expire.")
+            return
+
+        final = stream_logs(api, main_job, namespace=namespace)
+        if final.status.stage != JobStage.COMPLETED:
+            message = f": {final.status.message}" if final.status.message else ""
+            raise ServicesError(f"Job {final.id} finished with stage '{stage_name(final.status.stage)}'{message}")
+    except KeyboardInterrupt:
+        log("Interrupted: cancelling the Job and its services...")
+        if main_job is not None:
+            api.cancel_job(job_id=main_job.id, namespace=namespace)
+        raise click.Abort() from None
+    finally:
+        # In detached mode the services are left running on purpose (the Job keeps using them).
+        if main_job is None or not detach:
+            cancel_services(api, started, namespace=namespace)
+
+
+def main_labels(labels: tuple[str, ...], name: str | None, group: str) -> dict[str, str]:
+    """Labels of the main Job: the ones the user asked for, plus the ones `ls` and `stop` filter on."""
+    return {**(parse_labels(list(labels), name) or {}), GROUP_LABEL: group, SERVICE_LABEL: MAIN_SERVICE}
+
+
+def main_aliases(specs: list[ServiceSpec]) -> list[str] | None:
+    """The `main` alias is only claimed when no service already answers to it."""
+    return None if MAIN_SERVICE in {spec.alias for spec in specs} else [MAIN_SERVICE]
+
+
+@cli.command("run", context_settings=RUN_CONTEXT)
+@SERVICES_OPTION
+@click.argument("image", metavar="IMAGE")
+@click.argument("command", nargs=-1, type=click.UNPROCESSED, metavar="COMMAND...")
+@common_options
+@handle_errors
+def run(
+    with_services: str,
+    image: str,
+    command: tuple[str, ...],
+    flavor: str | None,
+    timeout: str | None,
+    services_timeout: str | None,
+    name: str | None,
+    labels: tuple[str, ...],
+    env: tuple[str, ...],
+    env_file: str | None,
+    secrets: tuple[str, ...],
+    secrets_file: str | None,
+    volumes: tuple[str, ...],
+    expose: tuple[int, ...],
+    ssh: bool,
+    resource_group_id: str | None,
+    namespace: str | None,
+    token: str | None,
+    detach: bool,
+    dry_run: bool,
+) -> None:
+    """Run a container Job, alongside services in a shared network group.
+
+    Like `hf jobs run` (and `docker run`): the image and the command to run in it come first. The services
+    are started first and waited for, the Job starts once they are all RUNNING, and the services are
+    canceled when the Job ends (or when this command is interrupted).
+
+    \b
+    Examples:
+      hf jobs-services run --with-services "dask(num_workers=4)" python:3.12 python my_script.py --epochs 3
+      hf jobs-services run --with-services "ray" python:3.12 sh -c 'python -c "import ray; ray.init()"'
+    """
+    if not command:
+        raise ServicesError(
+            f"Missing COMMAND. Example: hf jobs-services run --with-services ray {image} python -c 'print(1)'"
+        )
+    source = with_services or find_default_services_file()
+    if source is None:
+        raise ServicesError(
+            f"No services file found. Pass --with-services, or write one of: {', '.join(DEFAULT_SERVICES_FILENAMES)}."
+        )
+    specs = build_service_specs(resolve_services(source))
+    group = new_group_name()
+    services_timeout = services_timeout or timeout or DEFAULT_SERVICES_TIMEOUT
+
+    if dry_run:
+        _print_plan(
+            source,
+            specs,
+            group,
+            {"image": image, "command": " ".join(command)},
+            flavor,
+            timeout,
+            services_timeout,
+            detach,
+        )
+        return
+
+    api = HfApi(token=token)
+    namespace = namespace or api.whoami(token=token)["name"]
+    resolved_token = token if isinstance(token, str) else get_token()
+
+    def start_main_job() -> JobInfo:
+        return api.run_job(
+            image=image,
+            command=list(command),
+            env=parse_env_map(list(env), env_file, token=resolved_token) or None,
+            secrets=parse_env_map(list(secrets), secrets_file, token=resolved_token) or None,
+            flavor=flavor,
+            timeout=timeout,
+            name=name,
+            labels=main_labels(labels, name, group),
+            volumes=parse_volumes(list(volumes)) or None,
+            expose=list(expose) or None,
+            ssh=ssh,
+            network_group=group,
+            network_aliases=main_aliases(specs),
+            resource_group_id=resource_group_id,
+            namespace=namespace,
+            token=token,
+        )
+
+    launch(
+        api,
+        namespace,
+        token=token,
+        specs=specs,
+        source=source,
+        group=group,
+        services_timeout=services_timeout,
+        resource_group_id=resource_group_id,
+        detach=detach,
+        start_main_job=start_main_job,
+    )
+
+
+@uv.command("run", context_settings=RUN_CONTEXT)
+@SERVICES_OPTION
 @click.argument("script", metavar="SCRIPT")
 @click.argument("script_args", nargs=-1, type=click.UNPROCESSED, metavar="[ARGS]...")
 @click.option("--with", "dependencies", multiple=True, help="Python dependency for the script (repeatable).")
 @click.option("-p", "--python", "python_version", default=None, help="Python version for the script, e.g. '3.11'.")
 @click.option("--image", default=None, help="Base image of the Job. Defaults to the default UV image.")
-@click.option("--flavor", default=None, help="Hardware flavor of the Job, e.g. 'cpu-upgrade' or 'a10g-small'.")
-@click.option("--timeout", default=None, help="Max duration of the Job, e.g. 300, '30m', '2h', '1d'.")
-@click.option(
-    "--services-timeout",
-    default=None,
-    help=f"Max duration of each service Job. Defaults to --timeout, or to {DEFAULT_SERVICES_TIMEOUT}.",
-)
-@click.option("--name", default=None, help="Name of the main Job.")
-@click.option("-l", "--label", "labels", multiple=True, help="Label of the main Job as key=value (repeatable).")
-@click.option("-e", "--env", multiple=True, help="Environment variable as KEY=VALUE, or KEY to forward the local one.")
-@click.option(
-    "--env-file", default=None, help="Path to a dotenv file with the environment variables, or '-' for stdin."
-)
-@click.option("-s", "--secrets", multiple=True, help="Secret as KEY=VALUE, or KEY to forward the local one.")
-@click.option("--secrets-file", default=None, help="Path to a dotenv file with the secrets, or '-' for stdin.")
-@click.option("-v", "--volume", "volumes", multiple=True, help="Volume to mount: hf://[TYPE/]SOURCE:/MOUNT_PATH[:ro].")
-@click.option("--expose", multiple=True, type=int, help="Port of the Job to expose through the Jobs proxy.")
-@click.option("--ssh", is_flag=True, default=False, help="Enable SSH access to the Job.")
-@click.option("--resource-group-id", default=None, help="Resource group shared by the Job and its services.")
-@click.option("--namespace", default=None, help="Namespace of the Job and its services. Defaults to the current user.")
-@click.option("--token", default=None, help="User access token. Defaults to the locally saved token.")
-@click.option("-d", "--detach", is_flag=True, default=False, help="Return as soon as the Job is started.")
-@click.option("--dry-run", is_flag=True, default=False, help="Show what would run, without starting anything.")
+@common_options
 @handle_errors
-def run(
+def run_uv(
     with_services: str,
     script: str,
     script_args: tuple[str, ...],
@@ -189,8 +360,9 @@ def run(
 ) -> None:
     """Run a UV script as a Job, alongside services in a shared network group.
 
-    The services are started first and waited for, the script starts once they are all RUNNING, and the
-    services are canceled when the script's Job ends (or when this command is interrupted).
+    Like `hf jobs uv run`, with services: the services are started first and waited for, the script starts
+    once they are all RUNNING, and the services are canceled when the script's Job ends (or when this
+    command is interrupted).
 
     \b
     Examples:
@@ -209,31 +381,24 @@ def run(
     services_timeout = services_timeout or timeout or DEFAULT_SERVICES_TIMEOUT
 
     if dry_run:
-        _print_plan(source, specs, group, script, flavor, timeout, services_timeout, detach)
+        _print_plan(
+            source,
+            specs,
+            group,
+            {"script": script, "args": " ".join(script_args) or None},
+            flavor,
+            timeout,
+            services_timeout,
+            detach,
+        )
         return
-    log(f"Services loaded from: {source}")
 
     api = HfApi(token=token)
     namespace = namespace or api.whoami(token=token)["name"]
     resolved_token = token if isinstance(token, str) else get_token()
 
-    started: list[ServiceJob] = []
-    main_job = None
-    try:
-        started = start_services(
-            api,
-            specs,
-            group=group,
-            namespace=namespace,
-            token=token,
-            timeout=services_timeout,
-            resource_group_id=resource_group_id,
-        )
-        wait_for_services(api, started, namespace=namespace, token=token, timeout=_seconds(services_timeout))
-        hint_connect(group)
-
-        aliases = [spec.alias for spec in specs]
-        main_job = api.run_uv_job(
+    def start_main_job() -> JobInfo:
+        return api.run_uv_job(
             script,
             script_args=list(script_args),
             dependencies=list(dependencies) or None,
@@ -244,40 +409,29 @@ def run(
             flavor=flavor,
             timeout=timeout,
             name=name,
-            labels={
-                **(parse_labels(list(labels), name) or {}),
-                GROUP_LABEL: group,
-                SERVICE_LABEL: MAIN_SERVICE,
-            },
+            labels=main_labels(labels, name, group),
             volumes=parse_volumes(list(volumes)) or None,
             expose=list(expose) or None,
             ssh=ssh,
             network_group=group,
-            network_aliases=[MAIN_SERVICE] if MAIN_SERVICE not in aliases else None,
+            network_aliases=main_aliases(specs),
             resource_group_id=resource_group_id,
             namespace=namespace,
             token=token,
         )
-        result("Job started", id=main_job.id, url=main_job.url)
 
-        if detach:
-            hint(f"Use `hf jobs logs -f {namespace}/{main_job.id}` to stream the logs.")
-            hint(f"Services stay up: stop them with `hf jobs-services stop {group}`, or let their timeout expire.")
-            return
-
-        final = stream_logs(api, main_job, namespace=namespace)
-        if final.status.stage != JobStage.COMPLETED:
-            message = f": {final.status.message}" if final.status.message else ""
-            raise ServicesError(f"Job {final.id} finished with stage '{stage_name(final.status.stage)}'{message}")
-    except KeyboardInterrupt:
-        log("Interrupted: cancelling the Job and its services...")
-        if main_job is not None:
-            api.cancel_job(job_id=main_job.id, namespace=namespace)
-        raise click.Abort() from None
-    finally:
-        # In detached mode the services are left running on purpose (the Job keeps using them).
-        if main_job is None or not detach:
-            cancel_services(api, started, namespace=namespace)
+    launch(
+        api,
+        namespace,
+        token=token,
+        specs=specs,
+        source=source,
+        group=group,
+        services_timeout=services_timeout,
+        resource_group_id=resource_group_id,
+        detach=detach,
+        start_main_job=start_main_job,
+    )
 
 
 @cli.command("ls | list")
@@ -344,7 +498,7 @@ def _print_plan(
     source: str,
     specs: list[ServiceSpec],
     group: str,
-    script: str,
+    main: dict[str, Any],
     flavor: str | None,
     timeout: str | None,
     services_timeout: str,
@@ -356,7 +510,7 @@ def _print_plan(
         services_file=source,
         services_group=group,
         services=len(specs),
-        script=script,
+        **main,
         flavor=flavor,
         job_timeout=timeout,
         services_timeout=services_timeout,
@@ -366,7 +520,7 @@ def _print_plan(
         [{"ALIAS": spec.alias, "IMAGE": spec.image, "FLAVOR": spec.flavor or "cpu-basic"} for spec in specs],
         ["ALIAS", "IMAGE", "FLAVOR"],
     )
-    hint(f"The Job reaches the services at $HF_NETWORK_GROUP_PREFIX<ALIAS>:<PORT>, e.g. {specs[0].alias}")
+    hint(f"The Job reaches the services at ${{HF_NETWORK_GROUP_PREFIX}}<ALIAS>:<PORT>, e.g. {specs[0].alias}")
 
 
 def check_local_files(script: str, script_args: Sequence[str]) -> None:

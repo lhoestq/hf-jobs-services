@@ -1,6 +1,6 @@
 # Services file of use_server.py: `hf jobs-services uv run use_server.py` finds it by name.
 services:
-  # reachable from the Job at http://$HF_NETWORK_GROUP_PREFIXserver:8000
+  # reachable from the Job at http://${HF_NETWORK_GROUP_PREFIX}server:8000
   server:
     image: python:3.12
     command: ["python", "-m", "http.server", "8000", "--bind", "0.0.0.0"]

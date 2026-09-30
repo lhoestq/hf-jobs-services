@@ -90,6 +90,11 @@ def discover_services_file(script: str) -> str | None:
     return next((candidate for candidate in services_candidates(script) if Path(candidate).is_file()), None)
 
 
+def find_default_services_file() -> str | None:
+    """Services file of the current folder, for a Job that has no script name to derive one from."""
+    return next((candidate for candidate in DEFAULT_SERVICES_FILENAMES if Path(candidate).is_file()), None)
+
+
 def build_service_specs(services: dict[str, Any]) -> list[ServiceSpec]:
     """Validate a services dict and expand `replicas` into one spec per replica."""
     if not isinstance(services, dict) or not services.get("services"):

@@ -8,6 +8,7 @@ from huggingface_hub.errors import HfHubHTTPError
 
 from hf_jobs_services import cli as cli_module
 from hf_jobs_services.cli import cli
+from hf_jobs_services.runner import MAIN_SERVICE
 
 
 class FakeApi:
@@ -25,8 +26,10 @@ class FakeApi:
         return {"name": "me"}
 
     def run_job(self, command, **kwargs):
-        self.started.append((kwargs.get("labels") or {}, kwargs | {"command": command}))
-        return self._job(f"svc{len(self.started)}")
+        labels = kwargs.get("labels") or {}
+        id = "main" if labels.get("service") == MAIN_SERVICE else f"svc{len(self.started) + 1}"
+        self.started.append((labels, kwargs | {"command": command}))
+        return self._job(id)
 
     def run_uv_job(self, script, **kwargs):
         self.started.append((kwargs.get("labels") or {}, kwargs | {"script": script}))
@@ -34,8 +37,10 @@ class FakeApi:
 
     def wait_for_job(self, job_id, stages=None, **kwargs):
         ids = job_id if isinstance(job_id, list) else [job_id]
-        infos = [self._info(id) for id in ids]
-        return infos if stages is not None else infos[0]
+        if stages is not None:
+            # The CLI is waiting for services to come up: in this fake, they are always up.
+            return [self._info(id, stage="RUNNING") for id in ids]
+        return self._info(ids[0])
 
     def fetch_job_logs(self, job_id=None, follow=True, **kwargs):
         # the real method is a generator of raw log lines
@@ -44,9 +49,10 @@ class FakeApi:
     def inspect_job(self, job_id=None, **kwargs):
         return self._info(job_id)
 
-    def _info(self, id):
-        stage = "RUNNING" if id.startswith("svc") else self.final_stage
-        return SimpleNamespace(id=id, status=SimpleNamespace(stage=JobStage(stage), message=None), labels={})
+    def _info(self, id, stage=None):
+        return SimpleNamespace(
+            id=id, status=SimpleNamespace(stage=JobStage(stage or self.final_stage), message=None), labels={}
+        )
 
     def cancel_job(self, job_id=None, namespace=None, **kwargs):
         self.canceled.append(job_id)
@@ -288,15 +294,38 @@ def test_uv_group_lists_run(workdir):
     assert "run" in result.output
 
 
-def test_bare_run_is_a_silent_alias_of_uv_run(patch_api, workdir):
-    result = workdir.invoke(cli, ["run", "--with-services", "dask(num_workers=1)", "my_script.py"])
+def test_run_starts_an_image_job_alongside_services(patch_api, workdir):
+    result = workdir.invoke(
+        cli, ["run", "--with-services", "dask(num_workers=1)", "python:3.12", "python", "-c", "print(1)"]
+    )
     assert result.exit_code == 0, result.output
-    assert "Warning" not in result.output
-    assert last().services == ["dask-scheduler", "dask-worker", "main"]
+
+    api = last()
+    assert api.services == ["dask-scheduler", "dask-worker", "main"]
+    main = api.started[-1][1]
+    assert main["image"] == "python:3.12"
+    assert main["command"] == ["python", "-c", "print(1)"]
+    assert main["network_aliases"] == ["main"]
+    assert api.canceled == ["svc1", "svc2"]
 
 
-def test_bare_run_is_not_listed_in_the_help(workdir):
-    result = workdir.invoke(cli, ["--help"])
-    assert result.exit_code == 0
-    assert "\n  run " not in result.output
-    assert "\n  uv " in result.output
+def test_run_requires_a_command(patch_api, workdir):
+    result = workdir.invoke(cli, ["run", "--with-services", "ray", "python:3.12"])
+    assert result.exit_code != 0
+    assert "Missing COMMAND" in result.output
+
+
+def test_run_reads_the_services_file_of_the_current_folder(patch_api, workdir, tmp_path):
+    (tmp_path / "jobs-services.yml").write_text(
+        yaml.safe_dump({"services": {"server": {"image": "nginx", "command": "nginx -g 'daemon off;'"}}})
+    )
+    result = workdir.invoke(cli, ["run", "curlimages/curl", "curl", "-sf", "http://server:80/"])
+    assert result.exit_code == 0, result.output
+    assert last().services == ["server", "main"]
+
+
+def test_run_dry_run_prints_the_image_and_the_command(workdir):
+    result = workdir.invoke(cli, ["run", "--dry-run", "--with-services", "ray", "python:3.12", "python", "s.py"])
+    assert result.exit_code == 0, result.output
+    assert "image: python:3.12" in result.output
+    assert "command: python s.py" in result.output
